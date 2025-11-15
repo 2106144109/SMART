@@ -1,0 +1,71 @@
+# 海上场景训练配置 (30秒时间间隔)
+# Maritime Scene Training Configuration (30s time interval)
+
+time_info: &time_info
+  num_historical_steps: 5     # 历史步数 (150秒 = 5 * 30秒 = 2.5分钟)
+  num_future_steps: 16        # 预测未来步数 (480秒 = 16 * 30秒 = 8分钟)
+  use_intention: False
+  token_size: 2048            # 词汇表大小（与生成的token数量一致）
+  # 总时长: 21步 * 30秒 = 630秒 = 10.5分钟 (匹配原始AIS数据)
+
+Dataset:
+  root: null  # 不使用root，直接指定raw_dir
+  train_batch_size: 1         # 图时序维度不完全对齐时，保持单样本更稳
+  val_batch_size: 1
+  test_batch_size: 1
+  shuffle: True
+  num_workers: 32             # 充分并行数据加载
+  pin_memory: True
+  persistent_workers: True
+  prefetch_factor: 4
+  
+  # 指定数据目录（修复后的数据）
+  train_raw_dir: ["/home/mahexing/SMART-main/data/maritime_windows_v1/train"]
+  val_raw_dir:   ["/home/mahexing/SMART-main/data/maritime_windows_v1/val"]
+  test_raw_dir:  ["/home/mahexing/SMART-main/data/maritime_windows_v1/test"]
+  train_processed_dir: null
+  val_processed_dir: null
+  test_processed_dir: null
+  
+  transform: "MaritimeTargetBuilder"  # 需要创建或使用None
+  dataset: "maritime"                  # 使用maritime数据集
+  <<: *time_info
+
+Trainer:
+  accelerator: "gpu"
+  devices: 2
+  max_epochs: 125
+  save_ckpt_path: "logs/maritime_checkpoints"  # 检查点保存路径
+  num_nodes: 1                # 节点数（多机训练时使用）
+  mode: null
+  ckpt_path: null             # 继续训练时的检查点路径
+  precision: "16-mixed"        # ⚡ 混合精度（更推荐）
+  accumulate_grad_batches: 4  # 用梯度累计放大有效batch，避免批内拼接
+
+Model:
+  mode: "train"
+  predictor: "smart"
+  dataset: "maritime"         # 标识为海上数据集
+  token_path: "smart/tokens/maritime_tokens_no_norm.pkl"
+  input_dim: 8                # 输入特征维度 [x,y,vx,vy,ax,ay,theta,omega]
+  hidden_dim: 128             # 隐藏层维度
+  output_dim: 2               # 输出维度 (x, y)
+  output_head: False
+  num_heads: 8                # 注意力头数
+  <<: *time_info
+  head_dim: 16                # 每个注意力头的维度
+  dropout: 0.1
+  num_freq_bands: 64          # 傅里叶位置编码频段数
+  lr: 0.0005                  # 学习率
+  warmup_steps: 1000          # 预热步数
+  total_steps: 50000          # 总训练步数
+  
+  decoder:
+    <<: *time_info
+    num_map_layers: 0         # 海上场景无地图，设为0
+    num_agent_layers: 6       # Agent交互层数
+    a2a_radius: 1000          # Agent间交互半径(米) - 海上更大
+    pl2pl_radius: 0           # 无地图
+    pl2a_radius: 0            # 无地图
+    time_span: 300            # 时间跨度(秒) - 30秒时间步，需要更大的时间跨度
+
