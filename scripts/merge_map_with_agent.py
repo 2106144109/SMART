@@ -14,7 +14,9 @@ from __future__ import annotations
 import argparse
 import copy
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
+
+import sys
 
 import sys
 
@@ -36,6 +38,7 @@ def _as_dict(data: Any) -> Dict[Any, Any]:
             return _as_dict(data[0])
         raise TypeError(
             "Unsupported data type: non-empty list/tuple. "
+            "Please provide a single map sample per .pt file."
             "Please provide a single scenario per .pt file."
         )
 
@@ -44,6 +47,17 @@ def _as_dict(data: Any) -> Dict[Any, Any]:
     if isinstance(data, dict):
         return data
     raise TypeError(f"Unsupported data type: {type(data)}")
+
+
+def _normalize_agent_scenarios(data: Any) -> List[Dict[Any, Any]]:
+    """Coerce single or batched agent inputs into a list of dict-like samples."""
+
+    if isinstance(data, (list, tuple)):
+        if len(data) == 0:
+            raise TypeError("Empty list/tuple is not a valid agent scenario")
+        return [_as_dict(item) for item in data]
+
+    return [_as_dict(data)]
 
 
 def _require_map_keys(data: Dict[Any, Any]) -> None:
@@ -103,6 +117,8 @@ def main():
         default=None,
         help=(
             "Optional path to save preprocessed output. For a single agent file this can be a file path; "
+            "for a directory of agent files this must be a directory. If an agent file contains multiple "
+            "scenarios, use a directory so each scenario can be written separately."
             "for a directory of agent files this must be a directory."
         ),
     )
@@ -114,6 +130,35 @@ def main():
     tp = TokenProcessor(token_size=args.token_size)
 
     def _process_agent(agent_file: Path, output_path: Path | None) -> None:
+        agent_raw = torch.load(agent_file, map_location="cpu")
+        scenarios = _normalize_agent_scenarios(agent_raw)
+        has_multiple = len(scenarios) > 1
+
+        output_is_dir = output_path and (
+            output_path.is_dir() or (has_multiple and output_path.suffix == "")
+        )
+        if has_multiple and output_path and not output_is_dir:
+            raise ValueError(
+                f"{agent_file} contains {len(scenarios)} scenarios; "
+                "please use --output as a directory to save each sample."
+            )
+
+        for idx, scenario in enumerate(scenarios):
+            merged = _merge_map_into_agent(scenario, map_with_tokens)
+            processed = tp.preprocess(merged)
+            label = f"{agent_file}[{idx}]" if has_multiple else f"{agent_file}"
+            print(f"{label}: ", end="")
+            _print_summary(processed)
+
+            if output_path:
+                if output_is_dir:
+                    output_path.mkdir(parents=True, exist_ok=True)
+                    suffix = f"_{idx}" if has_multiple else ""
+                    target_file = output_path / f"{agent_file.stem}{suffix}{agent_file.suffix}"
+                else:
+                    target_file = output_path
+                torch.save(processed, target_file)
+                print(f"Saved preprocessed sample to {target_file}")
         agent_raw = _as_dict(torch.load(agent_file, map_location="cpu"))
         merged = _merge_map_into_agent(agent_raw, map_with_tokens)
         processed = tp.preprocess(merged)
@@ -136,6 +181,7 @@ def main():
             raise FileNotFoundError(f"No .pt files found in {args.agent_path}")
 
         for agent_file in agent_files:
+            _process_agent(agent_file, output_dir)
             target = output_dir / agent_file.name if output_dir else None
             _process_agent(agent_file, target)
     else:
