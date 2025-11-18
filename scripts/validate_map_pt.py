@@ -175,6 +175,23 @@ def main() -> None:
     print(f"Loaded: {args.path}")
     print(f"map_point: {_tensor_desc(_get_from_data(loaded, 'map_point'))}")
     print(f"map_polygon: {_tensor_desc(_get_from_data(loaded, 'map_polygon'))}")
+    # Print map_point details
+    mp = _get_from_data(loaded, 'map_point')
+    mp_pos = getattr(mp, "position", None)
+    mp_ori = getattr(mp, "orientation", None)
+    mp_typ = getattr(mp, "type", None)
+    print(f"map_point.position: {_tensor_desc(mp_pos)}")
+    print(f"map_point.orientation: {_tensor_desc(mp_ori)}")
+    print(f"map_point.type: {_tensor_desc(mp_typ)}")
+
+    # Print map_polygon details
+    mpg = _get_from_data(loaded, 'map_polygon')
+    mpg_typ = getattr(mpg, "type", None)
+    mpg_light = getattr(mpg, "light_type", None)
+    print(f"map_polygon.type: {_tensor_desc(mpg_typ)}")
+    print(f"map_polygon.light_type: {_tensor_desc(mpg_light)}")
+
+    # Print edge_index details
     edge = _get_from_data(loaded, ('map_point', 'to', 'map_polygon'))
     edge_index = getattr(edge, "edge_index", None)
     print(f"edge_index: {_tensor_desc(edge_index)}")
