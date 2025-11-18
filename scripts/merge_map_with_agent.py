@@ -18,6 +18,8 @@ from typing import Any, Dict, List
 
 import sys
 
+import sys
+
 import torch
 from torch_geometric.data import HeteroData
 
@@ -37,6 +39,7 @@ def _as_dict(data: Any) -> Dict[Any, Any]:
         raise TypeError(
             "Unsupported data type: non-empty list/tuple. "
             "Please provide a single map sample per .pt file."
+            "Please provide a single scenario per .pt file."
         )
 
     if isinstance(data, HeteroData):
@@ -126,6 +129,7 @@ def main():
             "Optional path to save preprocessed output. For a single agent file this can be a file path; "
             "for a directory of agent files this must be a directory. If an agent file contains multiple "
             "scenarios, use a directory so each scenario can be written separately."
+            "for a directory of agent files this must be a directory."
         ),
     )
     parser.add_argument("--token-size", type=int, default=2048, help="Token size for TokenProcessor/tokenize_map")
@@ -166,6 +170,14 @@ def main():
                     target_file = output_path
                 torch.save(processed, target_file)
                 print(f"Saved preprocessed sample to {target_file}")
+        agent_raw = _as_dict(torch.load(agent_file, map_location="cpu"))
+        merged = _merge_map_into_agent(agent_raw, map_with_tokens)
+        processed = tp.preprocess(merged)
+        print(f"{agent_file}: ", end="")
+        _print_summary(processed)
+        if output_path:
+            torch.save(processed, output_path)
+            print(f"Saved preprocessed sample to {output_path}")
 
     if args.agent_path.is_dir():
         if args.output and args.output.exists() and not args.output.is_dir():
@@ -181,6 +193,8 @@ def main():
 
         for agent_file in agent_files:
             _process_agent(agent_file, output_dir)
+            target = output_dir / agent_file.name if output_dir else None
+            _process_agent(agent_file, target)
     else:
         _process_agent(args.agent_path, args.output)
 
