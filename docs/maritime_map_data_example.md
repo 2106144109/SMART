@@ -231,3 +231,15 @@ data['map_point', 'to', 'map_polygon'].edge_index = torch.stack([
 * 每个点的坐标/朝向/类型：`data['map_point'].position`、`orientation`、`type`；
 * 每条折线对应的 polygon 类型（`map_polygon.type`）与点到 polygon 的连接关系（`edge_index`）。
 将其传入 `TokenProcessor.preprocess` 后，模型即可把你的水域折线转换为 polyline token 并参与地图建模。
+
+### 命令行快速使用
+
+仓库新增了 `scripts/maritime_map_converter.py`，可直接把上述 JSON 段列表转成 `HeteroData` 并打印关键字段：
+
+```bash
+python scripts/maritime_map_converter.py your_segments.json \
+  --type-map channel=0 water=1 restricted=2 berth=3 \
+  --default-type 0
+```
+
+`--type-map` 可根据你的 `shape_type` 自定义类别 ID；未知类型会使用 `--default-type`。
