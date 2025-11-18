@@ -195,6 +195,21 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Fallback type id when shape_type is not found in the type map.",
     )
+    parser.add_argument(
+        "--tokenize-map",
+        action="store_true",
+        help="Run TokenProcessor.tokenize_map to build pt_token/map_save for the converted map.",
+    )
+    parser.add_argument(
+        "--token-size",
+        type=int,
+        default=2048,
+        help="Token size for TokenProcessor (needs matching agent token file, default 2048).",
+    )
+    parser.add_argument(
+        "--save",
+        help="Optional path to torch.save() the converted (or tokenized) map data.",
+    )
     return parser.parse_args()
 
 
@@ -223,6 +238,32 @@ def main() -> None:
     print("map_polygon.type:", data["map_polygon"].type)
     print("map_polygon.light_type:", data["map_polygon"].light_type)
     print("edge_index:", data["map_point", "to", "map_polygon"].edge_index)
+
+    if args.tokenize_map:
+        from smart.datasets.preprocess import TokenProcessor
+
+        token_processor = TokenProcessor(token_size=args.token_size)
+        map_data = {
+            "map_point": data["map_point"],
+            "map_polygon": data["map_polygon"],
+            ("map_point", "to", "map_polygon"): data["map_point", "to", "map_polygon"],
+        }
+        tokenized = token_processor.tokenize_map(map_data)
+        pt_token = tokenized["pt_token"]
+        map_save = tokenized["map_save"]
+
+        print("pt_token keys:", {k: v.shape if hasattr(v, "shape") else v for k, v in pt_token.items()})
+        print(
+            "map_save shapes:",
+            {k: v.shape if hasattr(v, "shape") else v for k, v in map_save.items()},
+        )
+
+        if args.save:
+            torch.save(tokenized, args.save)
+            print(f"Tokenized map saved to {args.save}")
+    elif args.save:
+        torch.save(data, args.save)
+        print(f"Converted map saved to {args.save}")
 
 
 if __name__ == "__main__":

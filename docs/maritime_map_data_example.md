@@ -243,3 +243,14 @@ python scripts/maritime_map_converter.py your_segments.json \
 ```
 
 `--type-map` 可根据你的 `shape_type` 自定义类别 ID；未知类型会使用 `--default-type`。
+
+若需直接生成 `pt_token`/`map_save` 供地图分支使用，可加上 `--tokenize-map`（默认使用仓库提供的 2048 agent token），并用 `--save` 将结果保存：
+
+```bash
+python scripts/maritime_map_converter.py your_segments.json \
+  --type-map channel=0 water=1 restricted=2 berth=3 \
+  --tokenize-map --save converted_map.pt
+```
+
+* `converted_map.pt` 会包含 `map_point`/`map_polygon` 以及 `pt_token` 等字段，可直接被下游 dataloader 读取。
+* 如需更换 token 大小（取决于 `smart/tokens/cluster_frame_5_*.pkl` 是否存在），使用 `--token-size` 覆盖默认值。
