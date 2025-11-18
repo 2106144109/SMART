@@ -254,3 +254,38 @@ python scripts/maritime_map_converter.py your_segments.json \
 
 * `converted_map.pt` 会包含 `map_point`/`map_polygon` 以及 `pt_token` 等字段，可直接被下游 dataloader 读取。
 * 如需更换 token 大小（取决于 `smart/tokens/cluster_frame_5_*.pkl` 是否存在），使用 `--token-size` 覆盖默认值。
+
+### 生成 token 后的下一步
+
+1. **在预处理/评估阶段加载 `converted_map.pt`**：
+   ```python
+   import torch
+   from smart.datasets.preprocess import TokenProcessor
+
+   # 加载 CLI 保存的 tokenized map（含 map_point / map_polygon / pt_token / map_save）
+   map_data = torch.load("converted_map.pt")
+
+   # 若你只保存了未 token 化的 HeteroData，可用 TokenProcessor 重新构建 pt_token
+   if "pt_token" not in map_data:
+       tp = TokenProcessor(token_size=2048)
+       map_data = tp.tokenize_map({
+           "map_point": map_data["map_point"],
+           "map_polygon": map_data["map_polygon"],
+           ("map_point", "to", "map_polygon"): map_data[("map_point", "to", "map_polygon")],
+       })
+   ```
+
+2. **与 agent 数据合并后调用 `TokenProcessor.preprocess`**：
+   将 `map_data` 放入场景 `HeteroData` 中（键名保持 `map_point`、`map_polygon`、`('map_point','to','map_polygon')` 以及 `pt_token`/`map_save`），再补齐
+   `agent` 节点和对应的边。随后调用：
+   ```python
+   scene_data = {**map_data, **agent_data, **agent_edges}
+   tp = TokenProcessor(token_size=2048)
+   processed = tp.preprocess(scene_data)
+   ```
+   `processed` 即可直接送入数据加载器/推理流程。
+
+3. **确认配置启用地图分支**：在训练或推理的配置中，将 `decoder.num_map_layers` 设为大于 0 的值，并确保数据集名称不是 `maritime`（否则地图分支会
+   被跳过）。必要时调整 `pl2pl_radius`、`pl2a_radius` 以控制地图-代理交互范围。
+
+通过以上步骤，你即可把起终点段列表转换为模型可用的 polyline token，并在下游流程中参与预测。

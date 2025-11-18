@@ -238,6 +238,10 @@ def main() -> None:
     print("map_polygon.type:", data["map_polygon"].type)
     print("map_polygon.light_type:", data["map_polygon"].light_type)
     print("edge_index:", data["map_point", "to", "map_polygon"].edge_index)
+    print(
+        f"summary: {data['map_point'].position.size(0)} points,"
+        f" {data['map_polygon'].type.size(0)} polygons"
+    )
 
     if args.tokenize_map:
         from smart.datasets.preprocess import TokenProcessor
@@ -256,6 +260,14 @@ def main() -> None:
         print(
             "map_save shapes:",
             {k: v.shape if hasattr(v, "shape") else v for k, v in map_save.items()},
+        )
+        if "pt_token" in map_save:
+            num_tokens = map_save["pt_token"].shape[0]
+        else:
+            num_tokens = pt_token.get("position", torch.empty((0,))).shape[0]
+        print(
+            "token summary:",
+            f"{num_tokens} pt_token rows across {data['map_polygon'].type.numel()} polygons",
         )
 
         if args.save:
