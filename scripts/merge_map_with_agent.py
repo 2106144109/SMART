@@ -95,6 +95,16 @@ def _merge_map_into_agent(agent_data: Dict[Any, Any], map_data: Dict[Any, Any]) 
     return merged
 
 
+def _require_agent_keys(data: Dict[Any, Any], label: str) -> None:
+    if "agent" not in data:
+        raise KeyError(f"{label} is missing required 'agent' data")
+
+    required = ["position", "velocity", "heading", "valid_mask", "type", "category"]
+    missing = [k for k in required if k not in data["agent"]]
+    if missing:
+        raise KeyError(f"{label} agent data missing keys: {missing}")
+
+
 def _print_summary(processed: Dict[Any, Any]) -> None:
     pt_count = processed["map_point"]["position"].shape[0]
     poly_count = processed["map_polygon"]["type"].shape[0]
@@ -145,6 +155,7 @@ def main():
 
         for idx, scenario in enumerate(scenarios):
             merged = _merge_map_into_agent(scenario, map_with_tokens)
+            _require_agent_keys(merged, label=f"{agent_file}[{idx}]" if has_multiple else str(agent_file))
             processed = tp.preprocess(merged)
             label = f"{agent_file}[{idx}]" if has_multiple else f"{agent_file}"
             print(f"{label}: ", end="")
