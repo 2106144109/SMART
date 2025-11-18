@@ -93,3 +93,141 @@ data['map_point', 'to', 'map_polygon'].edge_index = edge_index
 3. 生成 `('pt_token','to','map_polygon')` 的边，供地图解码器进行半径图构建与下一步 token 预测。【F:smart/datasets/preprocess.py†L403-L468】【F:smart/modules/map_decoder.py†L96-L139】
 
 如需贴合你最初的 JSON 结构（`lane_centerlines`/`road_boundaries`/`crosswalks`/`stop_lines`），只需将每条几何拆成有序点列，分别赋不同的 `type` ID，并确保 `edge_index` 把点连到正确的 polygon 索引即可。
+
+## 将“起点-终点”分段数据转为 HeteroData（基于你提供的示例）
+
+你的数据是按段记录的，每条折线由多个 `{start_x, start_y, end_x, end_y}` 片段组成。下面的步骤与示例代码展示如何：
+1. 按 `polyline_id` / `shape_id` 聚合同一条折线的片段。
+2. 依据几何连续性排序片段（让上一个片段的 `end` 尽量衔接下一个片段的 `start`）。
+3. 把排序后的片段拼成有序点列：`[start0, end0, end1, ...]`。
+4. 为每条折线指定一个 `map_polygon` 节点，分配 `type`（如 `shape_type=='water'` → `type=1` 代表航道边界/水域边界）。
+5. 生成 point → polygon 的 `edge_index`，并填充 `orientation`（相邻点方向角）。
+
+```python
+import math
+import torch
+from torch_geometric.data import HeteroData
+
+# ====== 示例输入：多段水域边界 ======
+raw_segments = [
+    {
+        "polyline_id": "water_1231",
+        "shape_type": "water",
+        "shape_id": 1231,
+        "start_x": 357912.43937938113,
+        "start_y": 3462367.9400085662,
+        "end_x": 358036.3697113833,
+        "end_y": 3462233.259432094,
+    },
+    {
+        "polyline_id": "water_1231",
+        "shape_type": "water",
+        "shape_id": 1231,
+        "start_x": 358036.3697113833,
+        "start_y": 3462233.259432094,
+        "end_x": 358150.93269944505,
+        "end_y": 3462081.199864556,
+    },
+    {
+        "polyline_id": "water_1231",
+        "shape_type": "water",
+        "shape_id": 1231,
+        "start_x": 358150.93269944505,
+        "start_y": 3462081.199864556,
+        "end_x": 358250.72811640496,
+        "end_y": 3461908.423217092,
+    },
+    {
+        "polyline_id": "water_1231",
+        "shape_type": "water",
+        "shape_id": 1231,
+        "start_x": 358250.72811640496,
+        "start_y": 3461908.423217092,
+        "end_x": 358377.7982863577,
+        "end_y": 3461748.56933738,
+    },
+]
+
+# ====== 1) 按 polyline_id 聚合并排序片段 ======
+segments_by_poly = {}
+for seg in raw_segments:
+    segments_by_poly.setdefault(seg["polyline_id"], []).append(seg)
+
+def sort_segments(segments):
+    """简单按几何连续性排序：从第一个片段出发，逐步寻找 end≈start 的下一个。"""
+    ordered = [segments[0]]
+    remaining = segments[1:]
+    while remaining:
+        last_end = (ordered[-1]["end_x"], ordered[-1]["end_y"])
+        # 用距离最小的 start 作为下一个片段
+        next_idx = min(
+            range(len(remaining)),
+            key=lambda i: (remaining[i]["start_x"] - last_end[0]) ** 2 + (remaining[i]["start_y"] - last_end[1]) ** 2,
+        )
+        ordered.append(remaining.pop(next_idx))
+    return ordered
+
+ordered_polylines = {k: sort_segments(v) for k, v in segments_by_poly.items()}
+
+# ====== 2) 拼接为点列 (start0, end0, end1, ...) ======
+poly_points = {}
+for pid, segs in ordered_polylines.items():
+    pts = [(segs[0]["start_x"], segs[0]["start_y"])]
+    for seg in segs:
+        pts.append((seg["end_x"], seg["end_y"]))
+    poly_points[pid] = torch.tensor(pts, dtype=torch.float)
+
+# ====== 3) 计算朝向（相邻点的 atan2），最后一个点可重复前一角度 ======
+def compute_heading(points):
+    headings = []
+    for i in range(len(points)):
+        if i + 1 < len(points):
+            dx = points[i + 1, 0] - points[i, 0]
+            dy = points[i + 1, 1] - points[i, 1]
+            headings.append(math.atan2(dy, dx))
+        else:
+            headings.append(headings[-1])
+    return torch.tensor(headings, dtype=torch.float)
+
+poly_headings = {pid: compute_heading(pts) for pid, pts in poly_points.items()}
+
+# ====== 4) 映射 shape_type -> type ID（可自定义约定） ======
+TYPE_MAP = {"channel": 0, "water": 1, "restricted": 2, "berth": 3}
+
+# ====== 5) 组装 HeteroData 字段 ======
+data = HeteroData()
+positions = []
+orientations = []
+types = []
+edge_rows = []
+edge_cols = []
+poly_types = []
+poly_light = []
+point_offset = 0
+
+for poly_idx, (pid, pts) in enumerate(poly_points.items()):
+    positions.append(torch.cat([pts, torch.zeros(len(pts), 1)], dim=1))  # 填 z=0
+    orientations.append(poly_headings[pid])
+    types.append(torch.full((len(pts),), TYPE_MAP.get("water", 1), dtype=torch.long))
+
+    edge_rows.append(torch.arange(point_offset, point_offset + len(pts)))
+    edge_cols.append(torch.full((len(pts),), poly_idx, dtype=torch.long))
+    point_offset += len(pts)
+
+    poly_types.append(TYPE_MAP.get("water", 1))
+    poly_light.append(0)
+
+data['map_point'].position = torch.cat(positions)
+data['map_point'].orientation = torch.cat(orientations)
+data['map_point'].type = torch.cat(types)
+data['map_polygon'].type = torch.tensor(poly_types, dtype=torch.long)
+data['map_polygon'].light_type = torch.tensor(poly_light, dtype=torch.long)
+data['map_point', 'to', 'map_polygon'].edge_index = torch.stack([
+    torch.cat(edge_rows), torch.cat(edge_cols)
+])
+```
+
+得到的 `data` 已包含 `tokenize_map` 需要的字段：
+* 每个点的坐标/朝向/类型：`data['map_point'].position`、`orientation`、`type`；
+* 每条折线对应的 polygon 类型（`map_polygon.type`）与点到 polygon 的连接关系（`edge_index`）。
+将其传入 `TokenProcessor.preprocess` 后，模型即可把你的水域折线转换为 polyline token 并参与地图建模。
