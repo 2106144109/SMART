@@ -30,6 +30,15 @@ from smart.datasets.preprocess import TokenProcessor
 
 def _as_dict(data: Any) -> Dict[Any, Any]:
     """Return a mutable mapping view for HeteroData or plain dict inputs."""
+
+    if isinstance(data, (list, tuple)):
+        if len(data) == 1:
+            return _as_dict(data[0])
+        raise TypeError(
+            "Unsupported data type: non-empty list/tuple. "
+            "Please provide a single scenario per .pt file."
+        )
+
     if isinstance(data, HeteroData):
         return data
     if isinstance(data, dict):
