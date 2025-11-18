@@ -304,3 +304,33 @@ python scripts/validate_map_pt.py converted_map.pt
    被跳过）。必要时调整 `pl2pl_radius`、`pl2a_radius` 以控制地图-代理交互范围。
 
 通过以上步骤，你即可把起终点段列表转换为模型可用的 polyline token，并在下游流程中参与预测。
+
+### 质量验证后的行动清单（速览）
+
+当使用 `validate_map_pt.py` 获得 “Validation passed.” 之后，可按以下步骤推进：
+
+1. **加载 `.pt`**：`map_data = torch.load("converted_map.pt")`。
+2. **补 token（如缺失）**：若没有 `pt_token`/`map_save`，调用 `TokenProcessor.tokenize_map` 生成。
+3. **合并代理数据**：将地图节点/边与 `agent` 节点及相关边合并，构造成场景 `HeteroData`。
+4. **运行 preprocess**：`processed = TokenProcessor(token_size=2048).preprocess(scene_data)`，得到可送入模型的张量。
+5. **启用地图分支**：在配置中设置 `decoder.num_map_layers > 0`，并根据需要调整 `pl2pl_radius`、`pl2a_radius`。
+
+完成以上动作后，即可在训练/推理时正式使用地图特征。
+
+### 一键合并地图与代理并跑 preprocess
+
+如果你已经有 `converted_map.pt`（或经 `--tokenize-map` 生成的带 token 的版本）和某个场景的 `agent` 数据样本，可以使用新脚本快速合并并跑一遍 `TokenProcessor.preprocess` 以确认全链路无误：
+
+```bash
+python scripts/merge_map_with_agent.py \
+  data/converted_map.pt \
+  path/to/agent_sample.pt \
+  --token-size 2048 \
+  --output data/processed_with_map.pt
+```
+
+脚本会：
+
+1. 载入地图与 agent 文件，若地图未包含 `pt_token`/`map_save`，会调用 `TokenProcessor.tokenize_map` 生成。
+2. 将地图节点/边（以及 token）合并到 agent 样本中，再调用 `TokenProcessor.preprocess`。
+3. 打印地图点、polygon、token 行数与 agent 数量的摘要，并在指定时保存处理后的样本，便于直接送入训练/推理流程。

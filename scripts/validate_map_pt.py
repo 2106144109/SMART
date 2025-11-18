@@ -173,6 +173,8 @@ def main() -> None:
         check_tokens(loaded, errors, warnings)
 
     print(f"Loaded: {args.path}")
+    print(f"map_point: {_tensor_desc(_get_from_data(loaded, 'map_point'))}")
+    print(f"map_polygon: {_tensor_desc(_get_from_data(loaded, 'map_polygon'))}")
     # Print map_point details
     mp = _get_from_data(loaded, 'map_point')
     mp_pos = getattr(mp, "position", None)
