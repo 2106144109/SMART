@@ -1,10 +1,10 @@
 """
 Merge a converted maritime map with agent data and run TokenProcessor.preprocess.
 
-This is a convenience CLI so you can smoke-test map tokens together with a real
-scenario sample. It will:
+This is a convenience CLI so you can smoke-test map tokens together with one or
+more real scenario samples. It will:
 1) load a map .pt produced by maritime_map_converter.py (tokenized or not)
-2) load an agent scenario .pt
+2) load one or many agent scenario .pt files
 3) ensure map tokens exist (tokenize if missing)
 4) merge map + agent data, run preprocess, and optionally save the processed
    output for downstream training/eval.
@@ -16,14 +16,29 @@ import copy
 from pathlib import Path
 from typing import Any, Dict
 
+import sys
+
 import torch
 from torch_geometric.data import HeteroData
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from smart.datasets.preprocess import TokenProcessor
 
 
 def _as_dict(data: Any) -> Dict[Any, Any]:
     """Return a mutable mapping view for HeteroData or plain dict inputs."""
+
+    if isinstance(data, (list, tuple)):
+        if len(data) == 1:
+            return _as_dict(data[0])
+        raise TypeError(
+            "Unsupported data type: non-empty list/tuple. "
+            "Please provide a single scenario per .pt file."
+        )
+
     if isinstance(data, HeteroData):
         return data
     if isinstance(data, dict):
@@ -77,24 +92,54 @@ def _print_summary(processed: Dict[Any, Any]) -> None:
 def main():
     parser = argparse.ArgumentParser(description="Merge map .pt with agent data and run preprocess")
     parser.add_argument("map_path", type=Path, help="Path to map .pt from maritime_map_converter.py")
-    parser.add_argument("agent_path", type=Path, help="Path to agent scenario .pt containing agent/edge fields")
-    parser.add_argument("--output", type=Path, default=None, help="Optional path to save preprocessed output")
+    parser.add_argument(
+        "agent_path",
+        type=Path,
+        help="Path to agent scenario .pt containing agent/edge fields or a directory of .pt files",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help=(
+            "Optional path to save preprocessed output. For a single agent file this can be a file path; "
+            "for a directory of agent files this must be a directory."
+        ),
+    )
     parser.add_argument("--token-size", type=int, default=2048, help="Token size for TokenProcessor/tokenize_map")
     args = parser.parse_args()
 
     map_raw = _as_dict(torch.load(args.map_path, map_location="cpu"))
-    agent_raw = _as_dict(torch.load(args.agent_path, map_location="cpu"))
-
     map_with_tokens = _maybe_tokenize_map(map_raw, token_size=args.token_size)
-    merged = _merge_map_into_agent(agent_raw, map_with_tokens)
-
     tp = TokenProcessor(token_size=args.token_size)
-    processed = tp.preprocess(merged)
-    _print_summary(processed)
 
-    if args.output:
-        torch.save(processed, args.output)
-        print(f"Saved preprocessed sample to {args.output}")
+    def _process_agent(agent_file: Path, output_path: Path | None) -> None:
+        agent_raw = _as_dict(torch.load(agent_file, map_location="cpu"))
+        merged = _merge_map_into_agent(agent_raw, map_with_tokens)
+        processed = tp.preprocess(merged)
+        print(f"{agent_file}: ", end="")
+        _print_summary(processed)
+        if output_path:
+            torch.save(processed, output_path)
+            print(f"Saved preprocessed sample to {output_path}")
+
+    if args.agent_path.is_dir():
+        if args.output and args.output.exists() and not args.output.is_dir():
+            raise ValueError("--output must be a directory when agent_path is a directory")
+
+        output_dir = args.output
+        if output_dir:
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+        agent_files = sorted(p for p in args.agent_path.iterdir() if p.is_file() and p.suffix == ".pt")
+        if not agent_files:
+            raise FileNotFoundError(f"No .pt files found in {args.agent_path}")
+
+        for agent_file in agent_files:
+            target = output_dir / agent_file.name if output_dir else None
+            _process_agent(agent_file, target)
+    else:
+        _process_agent(args.agent_path, args.output)
 
 
 if __name__ == "__main__":
