@@ -1,10 +1,10 @@
 """
 Merge a converted maritime map with agent data and run TokenProcessor.preprocess.
 
-This is a convenience CLI so you can smoke-test map tokens together with a real
-scenario sample. It will:
+This is a convenience CLI so you can smoke-test map tokens together with one or
+more real scenario samples. It will:
 1) load a map .pt produced by maritime_map_converter.py (tokenized or not)
-2) load an agent scenario .pt
+2) load one or many agent scenario .pt files
 3) ensure map tokens exist (tokenize if missing)
 4) merge map + agent data, run preprocess, and optionally save the processed
    output for downstream training/eval.
@@ -14,21 +14,47 @@ from __future__ import annotations
 import argparse
 import copy
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
+
+import sys
 
 import torch
 from torch_geometric.data import HeteroData
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from smart.datasets.preprocess import TokenProcessor
 
 
 def _as_dict(data: Any) -> Dict[Any, Any]:
     """Return a mutable mapping view for HeteroData or plain dict inputs."""
+
+    if isinstance(data, (list, tuple)):
+        if len(data) == 1:
+            return _as_dict(data[0])
+        raise TypeError(
+            "Unsupported data type: non-empty list/tuple. "
+            "Please provide a single map sample per .pt file."
+        )
+
     if isinstance(data, HeteroData):
         return data
     if isinstance(data, dict):
         return data
     raise TypeError(f"Unsupported data type: {type(data)}")
+
+
+def _normalize_agent_scenarios(data: Any) -> List[Dict[Any, Any]]:
+    """Coerce single or batched agent inputs into a list of dict-like samples."""
+
+    if isinstance(data, (list, tuple)):
+        if len(data) == 0:
+            raise TypeError("Empty list/tuple is not a valid agent scenario")
+        return [_as_dict(item) for item in data]
+
+    return [_as_dict(data)]
 
 
 def _require_map_keys(data: Dict[Any, Any]) -> None:
@@ -77,24 +103,75 @@ def _print_summary(processed: Dict[Any, Any]) -> None:
 def main():
     parser = argparse.ArgumentParser(description="Merge map .pt with agent data and run preprocess")
     parser.add_argument("map_path", type=Path, help="Path to map .pt from maritime_map_converter.py")
-    parser.add_argument("agent_path", type=Path, help="Path to agent scenario .pt containing agent/edge fields")
-    parser.add_argument("--output", type=Path, default=None, help="Optional path to save preprocessed output")
+    parser.add_argument(
+        "agent_path",
+        type=Path,
+        help="Path to agent scenario .pt containing agent/edge fields or a directory of .pt files",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help=(
+            "Optional path to save preprocessed output. For a single agent file this can be a file path; "
+            "for a directory of agent files this must be a directory. If an agent file contains multiple "
+            "scenarios, use a directory so each scenario can be written separately."
+        ),
+    )
     parser.add_argument("--token-size", type=int, default=2048, help="Token size for TokenProcessor/tokenize_map")
     args = parser.parse_args()
 
     map_raw = _as_dict(torch.load(args.map_path, map_location="cpu"))
-    agent_raw = _as_dict(torch.load(args.agent_path, map_location="cpu"))
-
     map_with_tokens = _maybe_tokenize_map(map_raw, token_size=args.token_size)
-    merged = _merge_map_into_agent(agent_raw, map_with_tokens)
-
     tp = TokenProcessor(token_size=args.token_size)
-    processed = tp.preprocess(merged)
-    _print_summary(processed)
 
-    if args.output:
-        torch.save(processed, args.output)
-        print(f"Saved preprocessed sample to {args.output}")
+    def _process_agent(agent_file: Path, output_path: Path | None) -> None:
+        agent_raw = torch.load(agent_file, map_location="cpu")
+        scenarios = _normalize_agent_scenarios(agent_raw)
+        has_multiple = len(scenarios) > 1
+
+        output_is_dir = output_path and (
+            output_path.is_dir() or (has_multiple and output_path.suffix == "")
+        )
+        if has_multiple and output_path and not output_is_dir:
+            raise ValueError(
+                f"{agent_file} contains {len(scenarios)} scenarios; "
+                "please use --output as a directory to save each sample."
+            )
+
+        for idx, scenario in enumerate(scenarios):
+            merged = _merge_map_into_agent(scenario, map_with_tokens)
+            processed = tp.preprocess(merged)
+            label = f"{agent_file}[{idx}]" if has_multiple else f"{agent_file}"
+            print(f"{label}: ", end="")
+            _print_summary(processed)
+
+            if output_path:
+                if output_is_dir:
+                    output_path.mkdir(parents=True, exist_ok=True)
+                    suffix = f"_{idx}" if has_multiple else ""
+                    target_file = output_path / f"{agent_file.stem}{suffix}{agent_file.suffix}"
+                else:
+                    target_file = output_path
+                torch.save(processed, target_file)
+                print(f"Saved preprocessed sample to {target_file}")
+
+    if args.agent_path.is_dir():
+        if args.output and args.output.exists() and not args.output.is_dir():
+            raise ValueError("--output must be a directory when agent_path is a directory")
+
+        output_dir = args.output
+        if output_dir:
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+        agent_files = sorted(p for p in args.agent_path.iterdir() if p.is_file() and p.suffix == ".pt")
+        if not agent_files:
+            raise FileNotFoundError(f"No .pt files found in {args.agent_path}")
+
+        for agent_file in agent_files:
+            _process_agent(agent_file, output_dir)
+    else:
+        _process_agent(args.agent_path, args.output)
 
 
 if __name__ == "__main__":
