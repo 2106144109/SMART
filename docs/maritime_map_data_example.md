@@ -255,6 +255,21 @@ python scripts/maritime_map_converter.py your_segments.json \
 * `converted_map.pt` 会包含 `map_point`/`map_polygon` 以及 `pt_token` 等字段，可直接被下游 dataloader 读取。
 * 如需更换 token 大小（取决于 `smart/tokens/cluster_frame_5_*.pkl` 是否存在），使用 `--token-size` 覆盖默认值。
 
+### 验证生成的 `.pt` 文件
+
+使用 `scripts/validate_map_pt.py` 可快速检查关键字段是否齐全、尺寸是否对齐、是否含 NaN/Inf：
+
+```bash
+python scripts/validate_map_pt.py converted_map.pt
+```
+
+常见检查包括：
+
+* `map_point.position`/`orientation`/`type` 数量一致且无 NaN。
+* `map_polygon.type` 与 `light_type` 长度一致。
+* `('map_point','to','map_polygon')` 的 `edge_index` 未越界。
+* 若文件已包含 `pt_token`/`map_save`，它们的行数与 `num_nodes` 对齐。
+
 ### 生成 token 后的下一步
 
 1. **在预处理/评估阶段加载 `converted_map.pt`**：
