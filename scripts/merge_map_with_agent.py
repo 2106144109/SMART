@@ -14,7 +14,7 @@ from __future__ import annotations
 import argparse
 import copy
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import sys
 
@@ -83,17 +83,100 @@ def _maybe_tokenize_map(map_data: Dict[Any, Any], token_size: int) -> Dict[Any, 
     return map_with_tokens
 
 
+def _get_map_store(data: Dict[Any, Any], key: Any):
+    if isinstance(data, dict):
+        return data.get(key)
+    try:
+        return data[key]
+    except Exception:
+        return None
+
+
+def _set_map_store(data: Dict[Any, Any], key: Any, value: Any) -> None:
+    if isinstance(data, dict):
+        data[key] = value
+    else:
+        try:
+            data[key] = value
+        except Exception:
+            setattr(data, key, value)
+
+
+def _maybe_get_plain_value(data: Any, key: Any):
+    if isinstance(data, dict):
+        return data.get(key)
+    try:
+        return data[key]
+    except Exception:
+        return getattr(data, key, None)
+
+
+def _extract_scene_origin(agent_data: Dict[Any, Any]) -> Optional[torch.Tensor]:
+    agent = agent_data.get("agent") if isinstance(agent_data, dict) else _get_map_store(agent_data, "agent")
+    if not agent or "scene_origin" not in agent:
+        return None
+
+    origin = agent["scene_origin"]
+    if origin is None:
+        return None
+    if not isinstance(origin, torch.Tensor):
+        origin = torch.as_tensor(origin, dtype=torch.float32)
+    if origin.numel() < 2:
+        return None
+    return origin.detach().clone().to(torch.float32).flatten()[:2]
+
+
+def _shift_xy(tensor_like: Any, origin_xy: torch.Tensor) -> Any:
+    if tensor_like is None:
+        return tensor_like
+    if not isinstance(tensor_like, torch.Tensor):
+        tensor = torch.as_tensor(tensor_like, dtype=torch.float32)
+    else:
+        tensor = tensor_like.clone()
+    if tensor.size(-1) < 2:
+        return tensor_like
+    origin = origin_xy.to(dtype=tensor.dtype, device=tensor.device)
+    tensor[..., 0] -= origin[0]
+    tensor[..., 1] -= origin[1]
+    return tensor
+
+
+def _align_map_coordinates(map_data: Dict[Any, Any], origin_xy: Optional[torch.Tensor]) -> Dict[Any, Any]:
+    map_copy = copy.deepcopy(map_data)
+    if origin_xy is None:
+        return map_copy
+
+    map_point = _get_map_store(map_copy, "map_point")
+    if map_point is not None:
+        pos = _get_map_store(map_point, "position")
+        if pos is not None:
+            _set_map_store(map_point, "position", _shift_xy(pos, origin_xy))
+
+    map_save = _get_map_store(map_copy, "map_save")
+    if map_save is not None:
+        traj_pos = _get_map_store(map_save, "traj_pos")
+        if traj_pos is not None:
+            _set_map_store(map_save, "traj_pos", _shift_xy(traj_pos, origin_xy))
+
+    return map_copy
+
+
 def _merge_map_into_agent(agent_data: Dict[Any, Any], map_data: Dict[Any, Any]) -> Dict[Any, Any]:
     merged = copy.deepcopy(agent_data)
-    merged["map_point"] = map_data["map_point"]
-    merged["map_polygon"] = map_data["map_polygon"]
-    merged[("map_point", "to", "map_polygon")] = map_data[("map_point", "to", "map_polygon")]
+    origin_xy = _extract_scene_origin(merged)
+    aligned_map = _align_map_coordinates(map_data, origin_xy)
+
+    merged["map_point"] = aligned_map["map_point"]
+    merged["map_polygon"] = aligned_map["map_polygon"]
+    merged[("map_point", "to", "map_polygon")] = aligned_map[("map_point", "to", "map_polygon")]
 
     for key in ["pt_token", "map_save"]:
-        if key in map_data:
-            merged[key] = map_data[key]
-    # Ensure a 'city' field exists for preprocess (which deletes it blindly)
-    merged["city"] = map_data["city"] if "city" in map_data else "unknown"
+        if key in aligned_map:
+            merged[key] = aligned_map[key]
+    city_val = _maybe_get_plain_value(aligned_map, "city")
+    if city_val is None:
+        city_val = _maybe_get_plain_value(map_data, "city")
+    merged["city"] = city_val if city_val is not None else "unknown"
     return merged
 
 
