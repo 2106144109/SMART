@@ -92,7 +92,204 @@ def _merge_map_into_agent(agent_data: Dict[Any, Any], map_data: Dict[Any, Any]) 
     for key in ["pt_token", "map_save"]:
         if key in map_data:
             merged[key] = map_data[key]
+    # Ensure a 'city' field exists for preprocess (which deletes it blindly)
+    merged["city"] = map_data["city"] if "city" in map_data else "unknown"
     return merged
+
+
+def _coerce_agent_struct(data: Dict[Any, Any], label: str) -> Dict[Any, Any]:
+    """Best-effort compatibility layer for legacy/flattened agent samples.
+
+    - If no 'agent' dict but top-level agent-like keys exist, wrap them under 'agent'.
+    - Fill missing keys with reasonable defaults inferred from position/valid_mask.
+    - Normalize dtypes/shapes expected by TokenProcessor.
+    """
+    out = copy.deepcopy(data)
+
+    # Wrap top-level fields into 'agent' if needed (only for plain dicts)
+    if "agent" not in out and isinstance(out, dict):
+        top_keys = [
+            "position",
+            "velocity",
+            "heading",
+            "valid_mask",
+            "type",
+            "category",
+            "num_nodes",
+        ]
+        if any(k in out for k in top_keys):
+            agent = {}
+            for k in top_keys:
+                if k in out:
+                    # safe pop to avoid KeyError on exotic mappings
+                    val = out.pop(k, None)
+                    if val is not None:
+                        agent[k] = val
+    if isinstance(out, HeteroData):
+        node_types = getattr(out, "node_types", [])
+        ordered_nt = (["agent"] if "agent" in node_types else []) + [nt for nt in node_types if nt != "agent"]
+        for nt in ordered_nt:
+            try:
+                store = out[nt]
+                has_vm = "valid_mask" in store
+                has_x = "x" in store
+                has_txy = "target_xy" in store
+                has_pos = "position" in store
+                has_type = "type" in store
+                if not (has_vm and (has_x or has_txy or has_pos)):
+                    continue
+
+                # Determine N, T
+                N = T = None
+                if has_vm and hasattr(store["valid_mask"], "dim") and store["valid_mask"].dim() == 2:
+                    N, T = store["valid_mask"].shape
+                elif has_x and hasattr(store["x"], "dim") and store["x"].dim() == 3:
+                    N, T = store["x"].shape[:2]
+                elif has_txy and hasattr(store["target_xy"], "dim") and store["target_xy"].dim() == 3:
+                    N, T = store["target_xy"].shape[:2]
+                elif has_pos and hasattr(store["position"], "dim") and store["position"].dim() == 3:
+                    N, T = store["position"].shape[:2]
+                else:
+                    if "num_nodes" in store:
+                        N = int(store["num_nodes"]) if not isinstance(store["num_nodes"], int) else store["num_nodes"]
+                    T = T or 1
+
+                agent_dict: Dict[str, Any] = {}
+                # position
+                pos = None
+                if has_x and store["x"].dim() == 3 and store["x"].shape[-1] >= 2:
+                    pos2 = store["x"][..., :2]
+                    pos = torch.cat([pos2, pos2.new_zeros(pos2.shape[0], pos2.shape[1], 1)], dim=-1)
+                elif has_pos and store["position"].dim() == 3:
+                    pos = store["position"]
+                elif has_txy and store["target_xy"].dim() == 3:
+                    pos2 = store["target_xy"]
+                    pos = torch.cat([pos2, pos2.new_zeros(pos2.shape[0], pos2.shape[1], 1)], dim=-1)
+                elif N is not None and T is not None:
+                    pos = torch.zeros(N, T, 3)
+                if pos is not None:
+                    agent_dict["position"] = pos
+
+                # valid_mask
+                if has_vm:
+                    vm = store["valid_mask"]
+                    vm = vm.to(torch.bool) if vm.dtype is not torch.bool else vm
+                    agent_dict["valid_mask"] = vm
+                elif N is not None and T is not None:
+                    agent_dict["valid_mask"] = torch.zeros(N, T, dtype=torch.bool)
+
+                # heading
+                if "heading" in store and hasattr(store["heading"], "dim"):
+                    hd = store["heading"]
+                    if hd.dim() == 3 and hd.shape[-1] == 1:
+                        hd = hd.squeeze(-1)
+                else:
+                    if pos is not None:
+                        hd = torch.zeros(pos.shape[0], pos.shape[1])
+                    elif N is not None and T is not None:
+                        hd = torch.zeros(N, T)
+                    else:
+                        hd = None
+                if hd is not None:
+                    agent_dict["heading"] = hd
+
+                # velocity
+                if "velocity" in store and hasattr(store["velocity"], "dim"):
+                    vel = store["velocity"]
+                    if vel.dim() == 2 and pos is not None:
+                        vel = torch.zeros(pos.shape[0], pos.shape[1], 2)
+                else:
+                    if pos is not None:
+                        vel = torch.zeros(pos.shape[0], pos.shape[1], 2)
+                    elif N is not None and T is not None:
+                        vel = torch.zeros(N, T, 2)
+                    else:
+                        vel = None
+                if vel is not None:
+                    agent_dict["velocity"] = vel
+
+                # type/category
+                if has_type:
+                    typ = store["type"]
+                    typ = typ.to(torch.uint8) if typ.dtype is not torch.uint8 else typ
+                    agent_dict["type"] = typ
+                elif N is not None:
+                    agent_dict["type"] = torch.zeros(N, dtype=torch.uint8)
+                baseN = agent_dict.get("type", torch.zeros(N or 0, dtype=torch.uint8)).shape[0]
+                cat = store["category"] if "category" in store else torch.zeros(baseN, dtype=torch.uint8)
+                if hasattr(cat, "dtype") and cat.dtype is not torch.uint8:
+                    cat = cat.to(torch.uint8)
+                agent_dict["category"] = cat
+
+                # num_nodes
+                if "num_nodes" in store:
+                    try:
+                        agent_dict["num_nodes"] = int(store["num_nodes"]) if not isinstance(store["num_nodes"], int) else store["num_nodes"]
+                    except Exception:
+                        agent_dict["num_nodes"] = store["num_nodes"]
+                elif pos is not None:
+                    agent_dict["num_nodes"] = pos.shape[0]
+
+                # Build a plain dict, preserve any map fields
+                def _to_plain(v: Any) -> Any:
+                    try:
+                        keys = list(v._mapping.keys())
+                        return {k: v[k] for k in keys}
+                    except Exception:
+                        return v
+                out_plain: Dict[str, Any] = {}
+                for k in ["map_point", "map_polygon", ("map_point", "to", "map_polygon"), "pt_token", "map_save", "city"]:
+                    if k in out:
+                        out_plain[k] = _to_plain(out[k])
+                out_plain["agent"] = agent_dict
+                return out_plain
+            except Exception:
+                continue
+
+    if "agent" not in out:
+        return out
+
+    agent = out["agent"]
+
+    pos = agent.get("position", None)
+    # Ensure position has 3 channels (x,y,z)
+    if pos is not None and pos.dim() == 3 and pos.shape[-1] == 2:
+        agent["position"] = torch.cat([pos, pos.new_zeros(pos.shape[0], pos.shape[1], 1)], dim=-1)
+        pos = agent["position"]
+
+    # valid_mask
+    if "valid_mask" not in agent and pos is not None:
+        N, T = pos.shape[0], pos.shape[1]
+        agent["valid_mask"] = torch.zeros(N, T, dtype=torch.bool)
+    if "valid_mask" in agent and agent["valid_mask"].dtype is not torch.bool:
+        agent["valid_mask"] = agent["valid_mask"].to(torch.bool)
+
+    # heading
+    if "heading" not in agent and pos is not None:
+        N, T = pos.shape[0], pos.shape[1]
+        agent["heading"] = torch.zeros(N, T, dtype=torch.float32)
+    if "heading" in agent and agent["heading"].dim() == 3 and agent["heading"].shape[-1] == 1:
+        agent["heading"] = agent["heading"].squeeze(-1)
+
+    # velocity (TokenProcessor can handle [...,2] and will extend)
+    if "velocity" not in agent and pos is not None:
+        N, T = pos.shape[0], pos.shape[1]
+        agent["velocity"] = torch.zeros(N, T, 2, dtype=torch.float32)
+
+    # type/category
+    if "type" not in agent and pos is not None:
+        agent["type"] = torch.zeros(pos.shape[0], dtype=torch.uint8)
+    elif "type" in agent and agent["type"].dtype is not torch.uint8:
+        agent["type"] = agent["type"].to(torch.uint8)
+
+    if "category" not in agent and pos is not None:
+        agent["category"] = torch.zeros(pos.shape[0], dtype=torch.uint8)
+
+    # num_nodes
+    if "num_nodes" not in agent and pos is not None:
+        agent["num_nodes"] = pos.shape[0]
+
+    return out
 
 
 def _require_agent_keys(data: Dict[Any, Any], label: str) -> None:
@@ -154,10 +351,11 @@ def main():
             )
 
         for idx, scenario in enumerate(scenarios):
-            merged = _merge_map_into_agent(scenario, map_with_tokens)
-            _require_agent_keys(merged, label=f"{agent_file}[{idx}]" if has_multiple else str(agent_file))
+            label = f"{agent_file}[{idx}]" if has_multiple else str(agent_file)
+            scenario_norm = _coerce_agent_struct(scenario, label=label)
+            merged = _merge_map_into_agent(scenario_norm, map_with_tokens)
+            _require_agent_keys(merged, label=label)
             processed = tp.preprocess(merged)
-            label = f"{agent_file}[{idx}]" if has_multiple else f"{agent_file}"
             print(f"{label}: ", end="")
             _print_summary(processed)
 
@@ -170,14 +368,6 @@ def main():
                     target_file = output_path
                 torch.save(processed, target_file)
                 print(f"Saved preprocessed sample to {target_file}")
-        agent_raw = _as_dict(torch.load(agent_file, map_location="cpu"))
-        merged = _merge_map_into_agent(agent_raw, map_with_tokens)
-        processed = tp.preprocess(merged)
-        print(f"{agent_file}: ", end="")
-        _print_summary(processed)
-        if output_path:
-            torch.save(processed, output_path)
-            print(f"Saved preprocessed sample to {output_path}")
 
     if args.agent_path.is_dir():
         if args.output and args.output.exists() and not args.output.is_dir():
@@ -193,8 +383,6 @@ def main():
 
         for agent_file in agent_files:
             _process_agent(agent_file, output_dir)
-            target = output_dir / agent_file.name if output_dir else None
-            _process_agent(agent_file, target)
     else:
         _process_agent(args.agent_path, args.output)
 

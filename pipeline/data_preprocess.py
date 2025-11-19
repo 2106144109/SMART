@@ -127,6 +127,20 @@ def get_agent_features(df: pd.DataFrame, av_id, num_historical_steps=10, dim=3, 
                      | (agent_category == 2)
                      | (agent_category == 3), num_historical_steps:] = True
 
+    # 1. 获取场景原点 (Scene Origin)
+    # 通常定义为：AV (主车) 在历史最后一帧 (即当前时刻) 的绝对坐标
+    # position 的形状是 [num_agents, num_steps, 3]
+    origin_timestep = num_historical_steps - 1
+    
+    # 提取 (x, y) 坐标。使用 .clone() 确保深拷贝，避免后续修改影响
+    scene_origin = position[av_idx, origin_timestep, :2].clone() 
+    
+    # 2. (关键) 将所有 Agent 的坐标转换为“相对坐标”
+    # 如果你的后续模型需要相对坐标输入，在这里执行减法：
+    position[..., :2] -= scene_origin
+    
+    # 此时 position 变成了相对坐标，而 scene_origin 记录了绝对位置
+
     return {
         'num_nodes': num_agents,
         'av_index': av_idx,
@@ -680,6 +694,8 @@ def wm2argo(file, dir_name, output_dir):
         tf_lights = process_dynamic_map(dynamic_map_infos)
         tf_current_light = tf_lights.loc[tf_lights["time_step"] == "11"]
         map_data = get_map_features(map_info, tf_current_light)
+        if map_data['map_point']['num_nodes'] > 0:
+            map_data['map_point']['position'][:, :2] -= scene_origin
         new_agents_array = process_agent(track_info, tracks_to_predict, sdc_track_index, scenario_id, 0, 91) # mtr2argo
         data = dict()
         data['scenario_id'] = new_agents_array['scenario_id'].values[0]
