@@ -329,6 +329,15 @@ python scripts/merge_map_with_agent.py \
   --output data/processed_with_map.pt
 ```
 
+如果 agent 数据按 `train`/`test`/`val` 三个子文件夹组织，只需把包含它们的根目录作为第二个参数，输出目录会自动按分割创建同名子目录：
+
+```bash
+python scripts/merge_map_with_agent.py \
+  data/converted_map.pt \
+  path/to/agent_root_with_splits \
+  --output data/processed_with_map
+```
+
 脚本会：
 
 1. 载入地图与 agent 文件，若地图未包含 `pt_token`/`map_save`，会调用 `TokenProcessor.tokenize_map` 生成。
