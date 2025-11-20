@@ -155,6 +155,46 @@ def _draw_scene_gt_map(
         swap_xy, flip_x, flip_y = False, False, False
         print(f"    [DEBUG] 轴变换(默认): swap_xy={swap_xy}, flip_x={flip_x}, flip_y={flip_y}")
 
+    def _draw_map_segments(map_save, pt_token):
+        if map_save is None or 'traj_pos' not in map_save:
+            return
+
+        traj_pos = map_save['traj_pos']
+        if hasattr(traj_pos, 'cpu'):
+            traj_pos = traj_pos.cpu().numpy()
+        else:
+            traj_pos = np.asarray(traj_pos)
+
+        pl_type = None
+        if pt_token is not None:
+            pl_type = pt_token.get('pl_type')
+            if hasattr(pl_type, 'cpu'):
+                pl_type = pl_type.cpu().numpy()
+            elif pl_type is not None:
+                pl_type = np.asarray(pl_type)
+
+        palette = [
+            "#7f8c8d", "#95a5a6", "#16a085", "#27ae60", "#2980b9",
+            "#8e44ad", "#2c3e50", "#f39c12", "#d35400", "#c0392b",
+        ]
+
+        for idx in range(traj_pos.shape[0]):
+            coords = []
+            for x, y in traj_pos[idx]:
+                lat, lon = _transform_point(
+                    x, y, use_ref_anchor, anchor_theta, swap_xy, flip_x, flip_y, anchor_lat, anchor_lon, norm_stats
+                )
+                coords.append([lat, lon])
+            color = palette[idx % len(palette)]
+            if pl_type is not None and idx < len(pl_type):
+                color = palette[int(pl_type[idx]) % len(palette)]
+            folium.PolyLine(coords, color=color, weight=1.2, opacity=0.55).add_to(m)
+
+    # 地图矢量（若存在）
+    map_save = data.get('map_save') if isinstance(data, dict) else getattr(data, 'map_save', None)
+    pt_token = data.get('pt_token') if isinstance(data, dict) else getattr(data, 'pt_token', None)
+    _draw_map_segments(map_save, pt_token)
+
     # 提取数据
     # 期望 agent.x: [N, T, 8]，其中 [:,:,0:2] = (x,y), [:,:,6] = theta
     if 'x' in data['agent']:
@@ -271,7 +311,13 @@ body{font-family:Arial,sans-serif;margin:20px;background:#f5f5f5;}
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str, default='configs/train/train_maritime.yaml')
-    parser.add_argument('--split', type=str, default='val', choices=['val', 'test'])
+    parser.add_argument(
+        '--split',
+        type=str,
+        default='val',
+        choices=['val', 'test'],
+        help='选择可视化的数据集划分：val 使用验证集，test 使用测试集 (配置文件中的路径)'
+    )
     parser.add_argument('--num_scenes', type=int, default=5)
     parser.add_argument('--output_dir', type=str, default='folium_maps')
     parser.add_argument('--bucket_pick', type=str, default=os.getenv('FOLIUM_BUCKET_PICK', 'median'),
