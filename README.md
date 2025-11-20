@@ -245,6 +245,7 @@ python evaluate_val_metrics.py --config configs/train/train_maritime.yaml --ckpt
 python visualize_predictions_folium.py --config configs/train/train_maritime.yaml --pretrain_ckpt logs/maritime_checkpoints/epoch=XX.ckpt --split test --num_scenes 5 --output_dir folium_pred_maps
 可视化 GT
 python visualize_scenes_folium.py --config configs/train/train_maritime.yaml --split val --num_scenes 5 --output_dir folium_maps
+  - `--split` 选择数据集划分：`val` 使用验证集（默认），`test` 使用测试集；对应路径取自配置文件中的 `val_raw_dir/test_raw_dir` 与 `val_processed_dir/test_processed_dir`
 关键张量与接口速查
 Transform 输出（海上）必备字段
 agent.token_pos：[N,T,8]

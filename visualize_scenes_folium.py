@@ -311,7 +311,13 @@ body{font-family:Arial,sans-serif;margin:20px;background:#f5f5f5;}
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str, default='configs/train/train_maritime.yaml')
-    parser.add_argument('--split', type=str, default='val', choices=['val', 'test'])
+    parser.add_argument(
+        '--split',
+        type=str,
+        default='val',
+        choices=['val', 'test'],
+        help='选择可视化的数据集划分：val 使用验证集，test 使用测试集 (配置文件中的路径)'
+    )
     parser.add_argument('--num_scenes', type=int, default=5)
     parser.add_argument('--output_dir', type=str, default='folium_maps')
     parser.add_argument('--bucket_pick', type=str, default=os.getenv('FOLIUM_BUCKET_PICK', 'median'),
