@@ -9,9 +9,16 @@ preprocessed data lacks these fields.
 
 import argparse
 import pprint
-from typing import Any, Mapping
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 import torch
+
+
+def _sorted_keys(container: Mapping[Any, Any]) -> list[str]:
+    """Return keys sorted safely even when they have different types."""
+
+    return sorted(container.keys(), key=repr)
 
 
 def _maybe_get(container: Mapping[str, Any], key: str) -> Any:
@@ -32,13 +39,37 @@ def _print_section(title: str) -> None:
     print(f"\n=== {title} ===")
 
 
+def _find_anchor_candidates(obj: Any, target_keys: set[str], path: str = "$") -> list[tuple[str, Any]]:
+    """Return a list of (path, value) pairs for matching anchor keys.
+
+    The search is best-effort and inspects mappings and sequences recursively,
+    ignoring other container types. Paths are printed in a JSONPath-like
+    format (e.g., ``$.metadata.origin_lat`` or ``$.agent[0].ref_lat``).
+    """
+
+    results: list[tuple[str, Any]] = []
+
+    if isinstance(obj, Mapping):
+        for key, value in obj.items():
+            key_path = f"{path}.{key}"
+            if isinstance(key, str) and key in target_keys:
+                results.append((key_path, value))
+            results.extend(_find_anchor_candidates(value, target_keys, key_path))
+    elif isinstance(obj, Sequence) and not isinstance(obj, (str, bytes, bytearray)):
+        for idx, value in enumerate(obj):
+            idx_path = f"{path}[{idx}]"
+            results.extend(_find_anchor_candidates(value, target_keys, idx_path))
+
+    return results
+
+
 def inspect_sample(path: str) -> None:
     data = torch.load(path, map_location="cpu")
 
     _print_section("Top-level object")
     print(f"type: {type(data)}")
     if isinstance(data, Mapping):
-        print(f"keys: {sorted(data.keys())}")
+        print(f"keys: {_sorted_keys(data)}")
     else:
         print("(not a Mapping; cannot inspect metadata fields)")
         return
@@ -50,7 +81,7 @@ def inspect_sample(path: str) -> None:
     else:
         print(f"type: {type(metadata)}")
         if isinstance(metadata, Mapping):
-            print(f"keys: {sorted(metadata.keys())}")
+            print(f"keys: {_sorted_keys(metadata)}")
             print(
                 "origin_lat/lon:",
                 _maybe_get(metadata, "origin_lat"),
@@ -66,7 +97,7 @@ def inspect_sample(path: str) -> None:
     else:
         print(f"type: {type(scene_info)}")
         if isinstance(scene_info, Mapping):
-            print(f"keys: {sorted(scene_info.keys())}")
+            print(f"keys: {_sorted_keys(scene_info)}")
             print(
                 "ref_lat/lon/theta:",
                 _maybe_get(scene_info, "ref_lat"),
@@ -75,6 +106,17 @@ def inspect_sample(path: str) -> None:
             )
         else:
             pprint.pprint(scene_info)
+
+    _print_section("Search for anchor candidates anywhere in sample")
+    anchor_candidates = _find_anchor_candidates(
+        data,
+        {"origin_lat", "origin_lon", "ref_lat", "ref_lon", "ref_theta"},
+    )
+    if not anchor_candidates:
+        print("<no anchor-like keys found>")
+    else:
+        for candidate_path, value in anchor_candidates:
+            print(f"{candidate_path}: {value}")
 
 
 def parse_args() -> argparse.Namespace:
