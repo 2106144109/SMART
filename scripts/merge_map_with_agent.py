@@ -445,29 +445,9 @@ def _process_agent_file(
 
 # Backward compatibility for older call sites that referenced `_process_agent`.
 def _process_agent(
-    agent_file: Path,
-    output_path: Path | None,
-    map_with_tokens: Dict[Any, Any] | None = None,
-    token_size: Optional[int] = None,
+    agent_file: Path, output_path: Path | None, map_with_tokens: Dict[Any, Any], token_size: int
 ) -> List[str]:
-    """Delegate to `_process_agent_file` while tolerating legacy signatures.
-
-    Old entry points called `_process_agent(agent_file, output_path)` without
-    passing `map_with_tokens` or `token_size`. To keep those calls working we
-    fall back to module-level defaults populated in `main()` after loading the
-    map.
-    """
-
-    map_ctx = map_with_tokens if map_with_tokens is not None else _DEFAULT_MAP_WITH_TOKENS
-    token_ctx = token_size if token_size is not None else _DEFAULT_TOKEN_SIZE
-
-    if map_ctx is None:
-        raise TypeError(
-            "map_with_tokens is required; please ensure main() initialized the default context "
-            "or call _process_agent_file directly with explicit arguments"
-        )
-
-    return _process_agent_file(agent_file, output_path, map_ctx, token_ctx)
+    return _process_agent_file(agent_file, output_path, map_with_tokens, token_size)
 
 
 def main():
@@ -506,11 +486,6 @@ def main():
 
     map_raw = _as_dict(torch.load(args.map_path, map_location="cpu"))
     map_with_tokens = _maybe_tokenize_map(map_raw, token_size=args.token_size)
-
-    # Populate defaults for legacy `_process_agent` callers that omit map/token args
-    global _DEFAULT_MAP_WITH_TOKENS, _DEFAULT_TOKEN_SIZE
-    _DEFAULT_MAP_WITH_TOKENS = map_with_tokens
-    _DEFAULT_TOKEN_SIZE = args.token_size
     if args.agent_path.is_dir():
         if args.output and args.output.exists() and not args.output.is_dir():
             raise ValueError("--output must be a directory when agent_path is a directory")
@@ -535,6 +510,8 @@ def main():
 
                 tasks = [(agent_file, split_output) for agent_file in agent_files]
                 _run_tasks(tasks, args.num_workers, map_with_tokens, args.token_size)
+                for agent_file in agent_files:
+                    _process_agent(agent_file, split_output)
         else:
             agent_files = sorted(p for p in args.agent_path.iterdir() if p.is_file() and p.suffix == ".pt")
             if not agent_files:
@@ -542,6 +519,8 @@ def main():
 
             tasks = [(agent_file, output_dir) for agent_file in agent_files]
             _run_tasks(tasks, args.num_workers, map_with_tokens, args.token_size)
+            for agent_file in agent_files:
+                _process_agent(agent_file, output_dir)
     else:
         for line in _process_agent_file(args.agent_path, args.output, map_with_tokens, args.token_size):
             print(line)
