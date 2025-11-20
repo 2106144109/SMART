@@ -100,13 +100,79 @@ class MaritimeTargetBuilder(BaseTransform):
         if 'agent' not in data.node_types:
             actual_nodes = list(data.node_types) if hasattr(data, 'node_types') else []
             raise ValueError(f"数据中缺少 'agent' 节点。实际节点: {actual_nodes}")
-        
+
         agent = data['agent']
-        
+
+        # 兼容缺失 x 的样本：尝试从其它字段重建 [x, y, vx, vy, ax, ay, theta, omega]
+        if not hasattr(agent, 'x'):
+            pos = agent['position'] if 'position' in agent else None
+            vel = agent['velocity'] if 'velocity' in agent else None
+            acc = agent['acceleration'] if 'acceleration' in agent else (agent['acc'] if 'acc' in agent else None)
+            heading = agent['heading'] if 'heading' in agent else None
+            omega = agent['angular_velocity'] if 'angular_velocity' in agent else (agent['omega'] if 'omega' in agent else None)
+            valid_mask = agent['valid_mask'] if 'valid_mask' in agent else None
+
+            def _infer_shape(tensors):
+                for t in tensors:
+                    if t is not None and hasattr(t, 'dim') and t.dim() >= 2:
+                        return t.shape[0], t.shape[1]
+                return None
+
+            shape = _infer_shape([pos, vel, heading, valid_mask])
+            if shape is None:
+                raise AttributeError("agent 数据缺少 x，并且无法从 position/velocity/heading/valid_mask 推断形状")
+
+            num_ships, num_steps = shape
+
+            def _pick_tensor(tensors):
+                for t in tensors:
+                    if t is not None and hasattr(t, 'device'):
+                        return t
+                return None
+
+            ref_tensor = _pick_tensor([pos, vel, acc, heading, omega])
+            device = ref_tensor.device if ref_tensor is not None else torch.device('cpu')
+            dtype = ref_tensor.dtype if ref_tensor is not None else torch.float32
+
+            x_fallback = torch.zeros((num_ships, num_steps, 8), device=device, dtype=dtype)
+
+            if pos is not None and pos.dim() >= 3 and pos.shape[-1] >= 2:
+                steps = min(num_steps, pos.shape[1])
+                x_fallback[:, :steps, 0] = pos[:, :steps, 0]
+                x_fallback[:, :steps, 1] = pos[:, :steps, 1]
+
+            if vel is not None and vel.dim() >= 3:
+                steps = min(num_steps, vel.shape[1])
+                x_fallback[:, :steps, 2] = vel[:, :steps, 0]
+                if vel.shape[-1] >= 2:
+                    x_fallback[:, :steps, 3] = vel[:, :steps, 1]
+
+            if acc is not None and acc.dim() >= 3:
+                steps = min(num_steps, acc.shape[1])
+                x_fallback[:, :steps, 4] = acc[:, :steps, 0]
+                if acc.shape[-1] >= 2:
+                    x_fallback[:, :steps, 5] = acc[:, :steps, 1]
+
+            if heading is not None and heading.dim() >= 2:
+                steps = min(num_steps, heading.shape[1])
+                if heading.dim() == 3 and heading.shape[-1] == 1:
+                    x_fallback[:, :steps, 6] = heading[:, :steps, 0]
+                else:
+                    x_fallback[:, :steps, 6] = heading[:, :steps]
+
+            if omega is not None and omega.dim() >= 2:
+                steps = min(num_steps, omega.shape[1])
+                if omega.dim() == 3 and omega.shape[-1] == 1:
+                    x_fallback[:, :steps, 7] = omega[:, :steps, 0]
+                else:
+                    x_fallback[:, :steps, 7] = omega[:, :steps]
+
+            agent.x = x_fallback
+
         # 验证数据形状
         if hasattr(agent, 'x'):
             num_ships, total_steps, num_features = agent.x.shape
-            
+
             # 检查时间步数是否匹配
             expected_steps = self.num_historical_steps + self.num_future_steps
             if total_steps != expected_steps:
