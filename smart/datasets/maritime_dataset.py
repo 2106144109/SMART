@@ -57,48 +57,6 @@ def _dict_to_heterodata(data: Mapping[str, Any]) -> HeteroData:
         # Fallback to simple assignment
         hd[key] = value
 
-    # Maritime dict samples may lack `x`; try to synthesize it from basic fields.
-    if "agent" in hd.node_types:
-        agent = hd["agent"]
-        if not hasattr(agent, "x"):
-            position = agent.get("position") if isinstance(agent, Mapping) else None
-            velocity = agent.get("velocity") if isinstance(agent, Mapping) else None
-            acceleration = agent.get("acceleration") if isinstance(agent, Mapping) else None
-            heading = agent.get("heading") if isinstance(agent, Mapping) else None
-            omega = agent.get("omega") if isinstance(agent, Mapping) else None
-
-            if isinstance(position, torch.Tensor) and position.dim() >= 2:
-                num_agents, num_steps = position.shape[:2]
-                dtype = position.dtype
-                device = position.device
-                x = torch.zeros((num_agents, num_steps, 8), dtype=dtype, device=device)
-
-                # xy positions
-                x[:, :, 0:2] = position[:, :, 0:2]
-
-                # velocities (vx, vy)
-                if isinstance(velocity, torch.Tensor) and velocity.shape[:2] == (num_agents, num_steps):
-                    x[:, :, 2:4] = velocity[:, :, 0:2]
-
-                # accelerations (ax, ay)
-                if isinstance(acceleration, torch.Tensor) and acceleration.shape[:2] == (num_agents, num_steps):
-                    x[:, :, 4:6] = acceleration[:, :, 0:2]
-
-                # heading (theta)
-                if isinstance(heading, torch.Tensor):
-                    # broadcast to match [N, T]
-                    x[:, :, 6] = heading.reshape(num_agents, num_steps)
-
-                # angular velocity (omega)
-                if isinstance(omega, torch.Tensor):
-                    x[:, :, 7] = omega.reshape(num_agents, num_steps)
-
-                agent["x"] = x
-
-            # Ensure num_nodes is set if we built x
-            if hasattr(agent, "x") and not hasattr(agent, "num_nodes"):
-                agent["num_nodes"] = agent.x.shape[0]
-
     return hd
 
 
