@@ -28,68 +28,6 @@ def _infer_num_nodes(store: Mapping[str, Any]) -> Optional[int]:
     return None
 
 
-def _synthesize_agent_x(agent: Any) -> None:
-    """Populate ``agent.x`` (and ``num_nodes``) if missing.
-
-    Works for both ``Mapping`` and ``NodeStorage`` objects by using duck-typing
-    instead of strict type checks, because PyG storages do not subclass Mapping
-    in older versions.
-    """
-
-    def _maybe_get(obj, key):
-        if hasattr(obj, "get"):
-            try:
-                return obj.get(key)
-            except Exception:
-                pass
-        try:
-            return obj[key]
-        except Exception:
-            return None
-
-    if hasattr(agent, "x"):
-        return
-
-    position = _maybe_get(agent, "position")
-    velocity = _maybe_get(agent, "velocity")
-    acceleration = _maybe_get(agent, "acceleration")
-    heading = _maybe_get(agent, "heading")
-    omega = _maybe_get(agent, "omega")
-
-    if isinstance(position, torch.Tensor) and position.dim() >= 2:
-        num_agents, num_steps = position.shape[:2]
-        dtype = position.dtype
-        device = position.device
-        x = torch.zeros((num_agents, num_steps, 8), dtype=dtype, device=device)
-
-        # xy positions
-        x[:, :, 0:2] = position[:, :, 0:2]
-
-        # velocities (vx, vy)
-        if isinstance(velocity, torch.Tensor) and velocity.shape[:2] == (num_agents, num_steps):
-            x[:, :, 2:4] = velocity[:, :, 0:2]
-
-        # accelerations (ax, ay)
-        if isinstance(acceleration, torch.Tensor) and acceleration.shape[:2] == (num_agents, num_steps):
-            x[:, :, 4:6] = acceleration[:, :, 0:2]
-
-        # heading (theta)
-        if isinstance(heading, torch.Tensor):
-            x[:, :, 6] = heading.reshape(num_agents, num_steps)
-
-        # angular velocity (omega)
-        if isinstance(omega, torch.Tensor):
-            x[:, :, 7] = omega.reshape(num_agents, num_steps)
-
-        agent["x"] = x
-
-    if hasattr(agent, "x") and not hasattr(agent, "num_nodes"):
-        try:
-            agent["num_nodes"] = agent.x.shape[0]
-        except Exception:
-            pass
-
-
 def _dict_to_heterodata(data: Mapping[str, Any]) -> HeteroData:
     """Convert a plain dict sample into HeteroData for downstream modules."""
 
@@ -118,10 +56,6 @@ def _dict_to_heterodata(data: Mapping[str, Any]) -> HeteroData:
 
         # Fallback to simple assignment
         hd[key] = value
-
-    # Maritime dict samples may lack `x`; try to synthesize it from basic fields.
-    if "agent" in hd.node_types:
-        _synthesize_agent_x(hd["agent"])
 
     return hd
 
@@ -255,11 +189,6 @@ class MaritimeDataset(Dataset):
             # 兼容 dict 保存的样本：转换为 HeteroData
             if isinstance(data, dict):
                 data = _dict_to_heterodata(data)
-
-            # 某些 HeteroData 样本可能缺少 agent.x（例如旧版处理脚本），
-            # 在进入 transform 之前补齐。
-            if hasattr(data, "node_types") and "agent" in data.node_types:
-                _synthesize_agent_x(data["agent"])
 
             # DEBUG: 在transform之前检查数据
             if not hasattr(data, 'node_types'):
