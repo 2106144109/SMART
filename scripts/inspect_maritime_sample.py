@@ -63,39 +63,6 @@ def _find_anchor_candidates(obj: Any, target_keys: set[str], path: str = "$") ->
     return results
 
 
-def _find_geoish_keys(obj: Any, path: str = "$") -> list[tuple[str, Any]]:
-    """Return (path, value) pairs for keys that *look* geo-related.
-
-    This is a looser heuristic than :func:`_find_anchor_candidates` and tries
-    to surface anything with ``lat``, ``lon`` or ``theta`` in the key name
-    (case-insensitive). Tuple keys are stringified so that graph-like metadata
-    is still inspectable.
-    """
-
-    results: list[tuple[str, Any]] = []
-
-    def key_is_geoish(key: Any) -> bool:
-        if isinstance(key, str):
-            haystack = key
-        else:
-            haystack = repr(key)
-        haystack = haystack.lower()
-        return any(token in haystack for token in ("lat", "lon", "theta"))
-
-    if isinstance(obj, Mapping):
-        for key, value in obj.items():
-            key_path = f"{path}.{key}"
-            if key_is_geoish(key):
-                results.append((key_path, value))
-            results.extend(_find_geoish_keys(value, key_path))
-    elif isinstance(obj, Sequence) and not isinstance(obj, (str, bytes, bytearray)):
-        for idx, value in enumerate(obj):
-            idx_path = f"{path}[{idx}]"
-            results.extend(_find_geoish_keys(value, idx_path))
-
-    return results
-
-
 def inspect_sample(path: str) -> None:
     data = torch.load(path, map_location="cpu")
 
@@ -149,14 +116,6 @@ def inspect_sample(path: str) -> None:
         print("<no anchor-like keys found>")
     else:
         for candidate_path, value in anchor_candidates:
-            print(f"{candidate_path}: {value}")
-
-    _print_section("Search for geo-related keys (fuzzy)")
-    geoish_candidates = _find_geoish_keys(data)
-    if not geoish_candidates:
-        print("<no geo-ish keys found>")
-    else:
-        for candidate_path, value in geoish_candidates:
             print(f"{candidate_path}: {value}")
 
 
