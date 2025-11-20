@@ -399,7 +399,10 @@ def main():
     parser.add_argument(
         "agent_path",
         type=Path,
-        help="Path to agent scenario .pt containing agent/edge fields or a directory of .pt files",
+        help=(
+            "Path to agent scenario .pt, a directory of .pt files, or a directory containing "
+            "train/test/val subdirectories of .pt files"
+        ),
     )
     parser.add_argument(
         "--output",
@@ -460,12 +463,29 @@ def main():
         if output_dir:
             output_dir.mkdir(parents=True, exist_ok=True)
 
-        agent_files = sorted(p for p in args.agent_path.iterdir() if p.is_file() and p.suffix == ".pt")
-        if not agent_files:
-            raise FileNotFoundError(f"No .pt files found in {args.agent_path}")
+        split_dirs = [
+            p for p in sorted(args.agent_path.iterdir()) if p.is_dir() and p.name in {"train", "test", "val"}
+        ]
 
-        for agent_file in agent_files:
-            _process_agent(agent_file, output_dir)
+        if split_dirs:
+            for split_dir in split_dirs:
+                agent_files = sorted(p for p in split_dir.iterdir() if p.is_file() and p.suffix == ".pt")
+                if not agent_files:
+                    raise FileNotFoundError(f"No .pt files found in {split_dir}")
+
+                split_output = output_dir / split_dir.name if output_dir else None
+                if split_output:
+                    split_output.mkdir(parents=True, exist_ok=True)
+
+                for agent_file in agent_files:
+                    _process_agent(agent_file, split_output)
+        else:
+            agent_files = sorted(p for p in args.agent_path.iterdir() if p.is_file() and p.suffix == ".pt")
+            if not agent_files:
+                raise FileNotFoundError(f"No .pt files found in {args.agent_path}")
+
+            for agent_file in agent_files:
+                _process_agent(agent_file, output_dir)
     else:
         _process_agent(args.agent_path, args.output)
 
