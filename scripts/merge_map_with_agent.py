@@ -31,6 +31,12 @@ if str(REPO_ROOT) not in sys.path:
 from smart.datasets.preprocess import TokenProcessor
 
 
+# Default map context used by backward-compatible wrappers when explicit values
+# are omitted (e.g., legacy calls to `_process_agent(agent_file, output_path)`).
+_DEFAULT_MAP_WITH_TOKENS: Dict[Any, Any] | None = None
+_DEFAULT_TOKEN_SIZE: int = 2048
+
+
 def _as_dict(data: Any) -> Dict[Any, Any]:
     """Return a mutable mapping view for HeteroData or plain dict inputs."""
 
