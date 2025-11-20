@@ -504,6 +504,8 @@ def main():
 
                 tasks = [(agent_file, split_output) for agent_file in agent_files]
                 _run_tasks(tasks, args.num_workers, map_with_tokens, args.token_size)
+                for agent_file in agent_files:
+                    _process_agent(agent_file, split_output)
         else:
             agent_files = sorted(p for p in args.agent_path.iterdir() if p.is_file() and p.suffix == ".pt")
             if not agent_files:
@@ -511,6 +513,8 @@ def main():
 
             tasks = [(agent_file, output_dir) for agent_file in agent_files]
             _run_tasks(tasks, args.num_workers, map_with_tokens, args.token_size)
+            for agent_file in agent_files:
+                _process_agent(agent_file, output_dir)
     else:
         for line in _process_agent_file(args.agent_path, args.output, map_with_tokens, args.token_size):
             print(line)
