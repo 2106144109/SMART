@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -386,11 +387,54 @@ def _require_agent_keys(data: Dict[Any, Any], label: str) -> None:
 
 
 def _print_summary(processed: Dict[Any, Any]) -> None:
+    print(_format_summary(processed))
+
+
+def _format_summary(processed: Dict[Any, Any]) -> str:
     pt_count = processed["map_point"]["position"].shape[0]
     poly_count = processed["map_polygon"]["type"].shape[0]
     token_rows = processed["pt_token"].get("num_nodes", 0) if "pt_token" in processed else 0
     agent_count = processed["agent"]["position"].shape[0] if "agent" in processed else 0
-    print(f"map_point: {pt_count}, map_polygon: {poly_count}, pt_token rows: {token_rows}, agents: {agent_count}")
+    return f"map_point: {pt_count}, map_polygon: {poly_count}, pt_token rows: {token_rows}, agents: {agent_count}"
+
+
+def _process_agent_file(
+    agent_file: Path, output_path: Path | None, map_with_tokens: Dict[Any, Any], token_size: int
+) -> List[str]:
+    messages: List[str] = []
+    tp = TokenProcessor(token_size=token_size)
+
+    agent_raw = torch.load(agent_file, map_location="cpu")
+    scenarios = _normalize_agent_scenarios(agent_raw)
+    has_multiple = len(scenarios) > 1
+
+    output_is_dir = output_path and (output_path.is_dir() or (has_multiple and output_path.suffix == ""))
+    if has_multiple and output_path and not output_is_dir:
+        raise ValueError(
+            f"{agent_file} contains {len(scenarios)} scenarios; "
+            "please use --output as a directory to save each sample."
+        )
+
+    for idx, scenario in enumerate(scenarios):
+        label = f"{agent_file}[{idx}]" if has_multiple else str(agent_file)
+        scenario_norm = _coerce_agent_struct(scenario, label=label)
+        merged = _merge_map_into_agent(scenario_norm, map_with_tokens)
+        _require_agent_keys(merged, label=label)
+        processed = tp.preprocess(merged)
+        summary_text = _format_summary(processed)
+        messages.append(f"{label}: {summary_text}")
+
+        if output_path:
+            if output_is_dir:
+                output_path.mkdir(parents=True, exist_ok=True)
+                suffix = f"_{idx}" if has_multiple else ""
+                target_file = output_path / f"{agent_file.stem}{suffix}{agent_file.suffix}"
+            else:
+                target_file = output_path
+            torch.save(processed, target_file)
+            messages.append(f"Saved preprocessed sample to {target_file}")
+
+    return messages
 
 
 def main():
@@ -399,7 +443,10 @@ def main():
     parser.add_argument(
         "agent_path",
         type=Path,
-        help="Path to agent scenario .pt containing agent/edge fields or a directory of .pt files",
+        help=(
+            "Path to agent scenario .pt, a directory of .pt files, or a directory containing "
+            "train/test/val subdirectories of .pt files"
+        ),
     )
     parser.add_argument(
         "--output",
@@ -413,45 +460,19 @@ def main():
         ),
     )
     parser.add_argument("--token-size", type=int, default=2048, help="Token size for TokenProcessor/tokenize_map")
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=1,
+        help=(
+            "Number of parallel workers when processing directories of agent files. "
+            "Values >1 will fork subprocesses to speed up preprocessing."
+        ),
+    )
     args = parser.parse_args()
 
     map_raw = _as_dict(torch.load(args.map_path, map_location="cpu"))
     map_with_tokens = _maybe_tokenize_map(map_raw, token_size=args.token_size)
-    tp = TokenProcessor(token_size=args.token_size)
-
-    def _process_agent(agent_file: Path, output_path: Path | None) -> None:
-        agent_raw = torch.load(agent_file, map_location="cpu")
-        scenarios = _normalize_agent_scenarios(agent_raw)
-        has_multiple = len(scenarios) > 1
-
-        output_is_dir = output_path and (
-            output_path.is_dir() or (has_multiple and output_path.suffix == "")
-        )
-        if has_multiple and output_path and not output_is_dir:
-            raise ValueError(
-                f"{agent_file} contains {len(scenarios)} scenarios; "
-                "please use --output as a directory to save each sample."
-            )
-
-        for idx, scenario in enumerate(scenarios):
-            label = f"{agent_file}[{idx}]" if has_multiple else str(agent_file)
-            scenario_norm = _coerce_agent_struct(scenario, label=label)
-            merged = _merge_map_into_agent(scenario_norm, map_with_tokens)
-            _require_agent_keys(merged, label=label)
-            processed = tp.preprocess(merged)
-            print(f"{label}: ", end="")
-            _print_summary(processed)
-
-            if output_path:
-                if output_is_dir:
-                    output_path.mkdir(parents=True, exist_ok=True)
-                    suffix = f"_{idx}" if has_multiple else ""
-                    target_file = output_path / f"{agent_file.stem}{suffix}{agent_file.suffix}"
-                else:
-                    target_file = output_path
-                torch.save(processed, target_file)
-                print(f"Saved preprocessed sample to {target_file}")
-
     if args.agent_path.is_dir():
         if args.output and args.output.exists() and not args.output.is_dir():
             raise ValueError("--output must be a directory when agent_path is a directory")
@@ -460,14 +481,64 @@ def main():
         if output_dir:
             output_dir.mkdir(parents=True, exist_ok=True)
 
-        agent_files = sorted(p for p in args.agent_path.iterdir() if p.is_file() and p.suffix == ".pt")
-        if not agent_files:
-            raise FileNotFoundError(f"No .pt files found in {args.agent_path}")
+        split_dirs = [
+            p for p in sorted(args.agent_path.iterdir()) if p.is_dir() and p.name in {"train", "test", "val"}
+        ]
 
-        for agent_file in agent_files:
-            _process_agent(agent_file, output_dir)
+        if split_dirs:
+            for split_dir in split_dirs:
+                agent_files = sorted(p for p in split_dir.iterdir() if p.is_file() and p.suffix == ".pt")
+                if not agent_files:
+                    raise FileNotFoundError(f"No .pt files found in {split_dir}")
+
+                split_output = output_dir / split_dir.name if output_dir else None
+                if split_output:
+                    split_output.mkdir(parents=True, exist_ok=True)
+
+                tasks = [(agent_file, split_output) for agent_file in agent_files]
+                _run_tasks(tasks, args.num_workers, map_with_tokens, args.token_size)
+        else:
+            agent_files = sorted(p for p in args.agent_path.iterdir() if p.is_file() and p.suffix == ".pt")
+            if not agent_files:
+                raise FileNotFoundError(f"No .pt files found in {args.agent_path}")
+
+            tasks = [(agent_file, output_dir) for agent_file in agent_files]
+            _run_tasks(tasks, args.num_workers, map_with_tokens, args.token_size)
     else:
-        _process_agent(args.agent_path, args.output)
+        for line in _process_agent_file(args.agent_path, args.output, map_with_tokens, args.token_size):
+            print(line)
+
+
+def _run_tasks(
+    tasks: List[tuple[Path, Path | None]],
+    num_workers: int,
+    map_with_tokens: Dict[Any, Any],
+    token_size: int,
+) -> None:
+    if num_workers <= 1:
+        for task in tasks:
+            for line in _process_agent_file(*task, map_with_tokens=map_with_tokens, token_size=token_size):
+                print(line)
+        return
+
+    with ProcessPoolExecutor(max_workers=num_workers) as executor:
+        future_map = {
+            executor.submit(
+                _process_agent_file,
+                task[0],
+                task[1],
+                map_with_tokens,
+                token_size,
+            ): task[0]
+            for task in tasks
+        }
+        for future in as_completed(future_map):
+            task_file = future_map[future]
+            try:
+                for line in future.result():
+                    print(line)
+            except Exception as exc:
+                raise RuntimeError(f"Failed processing {task_file}: {exc}") from exc
 
 
 if __name__ == "__main__":
