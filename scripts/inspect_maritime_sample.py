@@ -14,6 +14,12 @@ from typing import Any, Mapping
 import torch
 
 
+def _sorted_keys(container: Mapping[Any, Any]) -> list[str]:
+    """Return keys sorted safely even when they have different types."""
+
+    return sorted(container.keys(), key=repr)
+
+
 def _maybe_get(container: Mapping[str, Any], key: str) -> Any:
     """Return ``container[key]`` if it exists, otherwise ``None``.
 
@@ -38,7 +44,7 @@ def inspect_sample(path: str) -> None:
     _print_section("Top-level object")
     print(f"type: {type(data)}")
     if isinstance(data, Mapping):
-        print(f"keys: {sorted(data.keys())}")
+        print(f"keys: {_sorted_keys(data)}")
     else:
         print("(not a Mapping; cannot inspect metadata fields)")
         return
@@ -50,7 +56,7 @@ def inspect_sample(path: str) -> None:
     else:
         print(f"type: {type(metadata)}")
         if isinstance(metadata, Mapping):
-            print(f"keys: {sorted(metadata.keys())}")
+            print(f"keys: {_sorted_keys(metadata)}")
             print(
                 "origin_lat/lon:",
                 _maybe_get(metadata, "origin_lat"),
@@ -66,7 +72,7 @@ def inspect_sample(path: str) -> None:
     else:
         print(f"type: {type(scene_info)}")
         if isinstance(scene_info, Mapping):
-            print(f"keys: {sorted(scene_info.keys())}")
+            print(f"keys: {_sorted_keys(scene_info)}")
             print(
                 "ref_lat/lon/theta:",
                 _maybe_get(scene_info, "ref_lat"),
