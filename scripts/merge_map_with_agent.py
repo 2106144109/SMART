@@ -437,6 +437,13 @@ def _process_agent_file(
     return messages
 
 
+# Backward compatibility for older call sites that referenced `_process_agent`.
+def _process_agent(
+    agent_file: Path, output_path: Path | None, map_with_tokens: Dict[Any, Any], token_size: int
+) -> List[str]:
+    return _process_agent_file(agent_file, output_path, map_with_tokens, token_size)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Merge map .pt with agent data and run preprocess")
     parser.add_argument("map_path", type=Path, help="Path to map .pt from maritime_map_converter.py")
