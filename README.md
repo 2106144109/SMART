@@ -197,6 +197,21 @@ smart/metrics/utils.py
 visualize_scenes_folium.py
 将历史（实线）与未来 GT（绿色虚线）绘制到 Folium 地图。
 采用“窗口参考锚点”（默认），支持坐标交换/翻转与旋回到全局东-北系。
+常用运行命令：
+
+```
+# 可选：提供归一化统计以还原真实坐标
+FOLIUM_NORM_STATS=pipeline/maritime_scene_preprocessor/stats.json \
+python visualize_scenes_folium.py \
+  --config configs/train/train_maritime.yaml \
+  --split val \
+  --num_scenes 5 \
+  --output_dir folium_maps
+```
+
+- 默认读取验证集并按文件分桶抽样 5 个场景，输出到 `folium_maps` 目录（包含索引页）。
+- 若数据样本包含 `map_save`/`pt_token`，脚本会将合并后的地图线段叠加在船舶轨迹上，颜色按 `pt_token.pl_type` 区分。
+- `FOLIUM_USE_REF_ANCHOR=0` 可关闭参考锚点，保留原始局部坐标轴；`FOLIUM_SAMPLE_MODE=uniform/random` 可更改抽样策略。
 预测可视化：
 visualize_predictions_folium.py
 加载模型与权重，推理得到 pred_traj，与 GT 对比。
